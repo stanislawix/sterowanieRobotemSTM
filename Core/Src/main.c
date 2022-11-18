@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "jsmn.h"
+#include "UART_DMA.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,8 +36,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define COMMAND_BUFFER_LENGTH 50
-#define UART1_TX_BUFFER_LENGTH 50
+#define COMMAND_BUFFER_LENGTH 30
+#define UART1_TX_BUFFER_LENGTH 30
+UARTDMA_HandleTypeDef huartdma;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -89,6 +91,7 @@ int nestingLevel;
 int speed;
 int direction;
 
+char ParseBuffer[30];
 
 uint8_t UART1_rxBuffer[1] = {0};
 uint8_t UART1_txBuffer[50] = {0};
@@ -154,9 +157,9 @@ int main(void)
   MX_TIM3_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
-//  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+  UARTDMA_Init(&huartdma, &huart1);
 
 //TODO:
 //    HAL_UART_Receive_IT(&huart1, UART1_rxBuffer, 1);
@@ -210,6 +213,7 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
     while (1) {
+//        UARTDMA_IsDataReady()
 //        HAL_UART_Transmit(&huart1, UART1_txBuffer, 12, 10);
 //      htim3.Instance->CCR1 = 25;  // duty cycle is .5 ms
 //      HAL_Delay(1200);
@@ -386,7 +390,7 @@ static void MX_DMA_Init(void)
 
   /* DMA interrupt init */
   /* DMA2_Stream2_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
 
 }
