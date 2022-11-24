@@ -26,7 +26,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "jsmn.h"
-#include "UART_DMA.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -36,9 +35,12 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define COMMAND_BUFFER_LENGTH 30
-#define UART1_TX_BUFFER_LENGTH 30
-UARTDMA_HandleTypeDef huartdma;
+#define COMMAND_BUFFER_LENGTH 32
+#define UART1_TX_BUFFER_LENGTH 60
+#define UART_TX_TIMEOUT_MS 100
+#define DMA_RECEIVE_LENGTH 30
+
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -47,7 +49,9 @@ UARTDMA_HandleTypeDef huartdma;
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart1;
 DMA_HandleTypeDef hdma_usart1_rx;
@@ -57,7 +61,7 @@ osThreadId_t blink01Handle;
 const osThreadAttr_t blink01_attributes = {
   .name = "blink01",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityBelowNormal,
 };
 /* Definitions for blink02 */
 osThreadId_t blink02Handle;
@@ -78,7 +82,7 @@ osThreadId_t sensorTaskHandle;
 const osThreadAttr_t sensorTask_attributes = {
   .name = "sensorTask",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityAboveNormal,
+  .priority = (osPriority_t) osPriorityNormal,
 };
 /* USER CODE BEGIN PV */
 int i;
@@ -88,13 +92,22 @@ jsmn_parser p;
 jsmntok_t t[128]; /* We expect no more than 128 tokens */
 char commandBuffer[COMMAND_BUFFER_LENGTH] = {0};
 int nestingLevel;
-int speed;
-int direction;
+int speed = 0;
+int direction = 0;
+int drive_direction = 0;
+int motor_speed = 0;
 
-char ParseBuffer[30];
+/// ODBIOR KOMEND Z BLUETOOTH
+uint8_t ReceiveBuffer[32];
+uint8_t UART1_txBuffer[UART1_TX_BUFFER_LENGTH] = {0};
 
-uint8_t UART1_rxBuffer[1] = {0};
-uint8_t UART1_txBuffer[50] = {0};
+/// CZUJNIKI
+uint32_t IC_Val1 = 0;
+uint32_t IC_Val2 = 0;
+uint32_t Difference = 0;
+uint8_t Is_First_Captured = 0;  // is the first value captured ?
+uint8_t Distance = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -103,15 +116,18 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_TIM1_Init(void);
+static void MX_TIM4_Init(void);
 void StartBlink01(void *argument);
 void StartBlink02(void *argument);
 void StartPwmTask(void *argument);
 void StartSensorTask(void *argument);
 
+static void MX_NVIC_Init(void);
 /* USER CODE BEGIN PFP */
 static int jsoneq(const char *json, jsmntok_t *tok, const char *s);
 void zeroingBuffersAndJsonParser();
-//void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
+void delay_us (uint16_t us);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -137,8 +153,8 @@ int main(void)
   /* USER CODE BEGIN Init */
     commandBufferIndex = 0;
     nestingLevel = 0;
-    speed = 0;
-    direction = 0;
+//  speed = 0;
+//  direction = 0;
 
     jsmn_init(&p);
 
@@ -156,13 +172,19 @@ int main(void)
   MX_DMA_Init();
   MX_TIM3_Init();
   MX_USART1_UART_Init();
-  /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
-  UARTDMA_Init(&huartdma, &huart1);
+  MX_TIM1_Init();
+  MX_TIM4_Init();
 
-//TODO:
-//    HAL_UART_Receive_IT(&huart1, UART1_rxBuffer, 1);
+  /* Initialize interrupts */
+  MX_NVIC_Init();
+  /* USER CODE BEGIN 2 */
+    HAL_TIM_Base_Start(&htim4); //start timera 4 do odmierzania mikrosekund dla obslugi czujnikow ultradzwiekowych HC-04
+    HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1); //start timera 3 do generowania PWM do sterowania silnikami i serwem robota
+    HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+    HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
+    HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, ReceiveBuffer, DMA_RECEIVE_LENGTH);
+    __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
 
   /* USER CODE END 2 */
 
@@ -170,19 +192,19 @@ int main(void)
   osKernelInitialize();
 
   /* USER CODE BEGIN RTOS_MUTEX */
-  /* add mutexes, ... */
+    /* add mutexes, ... */
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
-  /* add semaphores, ... */
+    /* add semaphores, ... */
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
-  /* start timers, add new ones, ... */
+    /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
   /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
+    /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -199,11 +221,11 @@ int main(void)
   sensorTaskHandle = osThreadNew(StartSensorTask, NULL, &sensorTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+    /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
-  /* add events, ... */
+    /* add events, ... */
   /* USER CODE END RTOS_EVENTS */
 
   /* Start scheduler */
@@ -213,19 +235,7 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
     while (1) {
-//        UARTDMA_IsDataReady()
-//        HAL_UART_Transmit(&huart1, UART1_txBuffer, 12, 10);
-//      htim3.Instance->CCR1 = 25;  // duty cycle is .5 ms
-//      HAL_Delay(1200);
 
-//TODO:
-//        htim3.Instance->CCR1 = (direction / 2) + 75;  // duty cycle is 1.5 ms
-//        HAL_Delay(50);
-
-//        HAL_Delay(5000);
-//      htim3.Instance->CCR1 = 125;  // duty cycle is 2.5 ms
-//      HAL_Delay(2000);
-//      HAL_Delay(2000);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -277,6 +287,81 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief NVIC Configuration.
+  * @retval None
+  */
+static void MX_NVIC_Init(void)
+{
+  /* USART1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(USART1_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(USART1_IRQn);
+  /* DMA2_Stream2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
+}
+
+/**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_IC_InitTypeDef sConfigIC = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 84-1;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 0xffff-1;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_IC_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
+  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
+  sConfigIC.ICFilter = 0;
+  if (HAL_TIM_IC_ConfigChannel(&htim1, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_IC_ConfigChannel(&htim1, &sConfigIC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_IC_ConfigChannel(&htim1, &sConfigIC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_IC_ConfigChannel(&htim1, &sConfigIC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+
 }
 
 /**
@@ -339,10 +424,59 @@ static void MX_TIM3_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN TIM3_Init 2 */
 
   /* USER CODE END TIM3_Init 2 */
   HAL_TIM_MspPostInit(&htim3);
+
+}
+
+/**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 84-1;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 65535;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
 
 }
 
@@ -388,11 +522,6 @@ static void MX_DMA_Init(void)
   /* DMA controller clock enable */
   __HAL_RCC_DMA2_CLK_ENABLE();
 
-  /* DMA interrupt init */
-  /* DMA2_Stream2_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
-
 }
 
 /**
@@ -411,7 +540,14 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, CZUJNIK_1_TRIG_Pin|CZUJNIK_2_TRIG_Pin|CZUJNIK_3_TRIG_Pin|CZUJNIK_4_TRIG_Pin
+                          |REAR_PHASE_1_Pin|REAR_PHASE_2_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA, LD2_Pin|FRONT_LEFT_PHASE_1_Pin|FRONT_LEFT_PHASE_2_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, FRONT_RIGHT_PHASE_1_Pin|FRONT_RIGHT_PHASE_2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
@@ -419,98 +555,180 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : USART_TX_Pin USART_RX_Pin */
-  GPIO_InitStruct.Pin = USART_TX_Pin|USART_RX_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  /*Configure GPIO pin : CZUJNIK_1_TRIG_Pin */
+  GPIO_InitStruct.Pin = CZUJNIK_1_TRIG_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(CZUJNIK_1_TRIG_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : LD2_Pin */
-  GPIO_InitStruct.Pin = LD2_Pin;
+  /*Configure GPIO pins : CZUJNIK_2_TRIG_Pin CZUJNIK_3_TRIG_Pin CZUJNIK_4_TRIG_Pin REAR_PHASE_1_Pin
+                           REAR_PHASE_2_Pin */
+  GPIO_InitStruct.Pin = CZUJNIK_2_TRIG_Pin|CZUJNIK_3_TRIG_Pin|CZUJNIK_4_TRIG_Pin|REAR_PHASE_1_Pin
+                          |REAR_PHASE_2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : LD2_Pin FRONT_LEFT_PHASE_1_Pin FRONT_LEFT_PHASE_2_Pin */
+  GPIO_InitStruct.Pin = LD2_Pin|FRONT_LEFT_PHASE_1_Pin|FRONT_LEFT_PHASE_2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : FRONT_RIGHT_PHASE_1_Pin FRONT_RIGHT_PHASE_2_Pin */
+  GPIO_InitStruct.Pin = FRONT_RIGHT_PHASE_1_Pin|FRONT_RIGHT_PHASE_2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
 }
 
 /* USER CODE BEGIN 4 */
 static int jsoneq(const char *json, jsmntok_t *tok, const char *s) {
-    if (tok->type == JSMN_STRING && (int)strlen(s) == tok->end - tok->start &&
+    if (tok->type == JSMN_STRING && (int) strlen(s) == tok->end - tok->start &&
         strncmp(json + tok->start, s, tok->end - tok->start) == 0) {
         return 0;
     }
     return -1;
 }
 
-//void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-//    if(UART1_rxBuffer[0] == '{') {
-//        commandBuffer[commandBufferIndex] = UART1_rxBuffer[0];
-//        commandBufferIndex++;
-//        nestingLevel++;
-//    } else if(UART1_rxBuffer[0] == '}') {
-//        commandBuffer[commandBufferIndex] = UART1_rxBuffer[0];
-//        commandBufferIndex++;
-//        nestingLevel--;
-//    } else if(UART1_rxBuffer[0] == '!') {
-//        if (nestingLevel != 0) {
-//            zeroingBuffersAndJsonParser();
-//            const char *error = "Invalid JSON command - wrong JSON nesting level";
-//            HAL_UART_Transmit(&huart1, error, strlen(error), 100);
-//            speed = direction = 0;
-//        } else {
-//            int temp = strlen(commandBuffer);
-//            r = jsmn_parse(&p, commandBuffer, strlen(commandBuffer), t, sizeof(t) / sizeof(t[0]));
-//            if (r < 0) {
-//                HAL_UART_Transmit(&huart1, "Failed to parse JSON\n", 22, 100);
-//            } else if (r < 1 || t[0].type != JSMN_OBJECT) {
-//                HAL_UART_Transmit(&huart1, "Object expected\n", 17, 100);
-//            } else {
-//                for (i = 1; i < r; i++) {
-//                    if (jsoneq((char *) commandBuffer, &t[i], "spd") == 0) {
-//                        /* We may use strndup() to fetch string value */
-////                        int essa = strtol( (char*) &commandBuffer + (t[i + 1].end - t[i + 1].start),NULL, 10);
-//                        speed = strtol( (char*) &commandBuffer + (t[i + 1].start),NULL, 10);
-//                        sprintf((char *) &UART1_txBuffer, "Speed: %.*s, konw_spd: %d\n", t[i + 1].end - t[i + 1].start,
-//                                commandBuffer + t[i + 1].start, speed);
-//                        i++;
-//                        HAL_UART_Transmit(&huart1, UART1_txBuffer, strlen(UART1_txBuffer), 100);
-//                    } else if (jsoneq(commandBuffer, &t[i], "dir") == 0) {
-//                        direction = strtol( (char*) &commandBuffer + (t[i + 1].start),NULL, 10);
-//                        sprintf((char *) &UART1_txBuffer, "Direction: %.*s, konw_dir: %d\n", t[i + 1].end - t[i + 1].start,
-//                                commandBuffer + t[i + 1].start, direction);
-//                        i++;
-//                        HAL_UART_Transmit(&huart1, UART1_txBuffer, strlen(UART1_txBuffer), 100);
-//                    } else {
-//                        sprintf((char *) &UART1_txBuffer, "Unexpected key: %.*s\n", t[i].end - t[i].start,
-//                                commandBuffer + t[i].start);
-//                        HAL_UART_Transmit(&huart1, UART1_txBuffer, strlen(UART1_txBuffer), 100);
-//                    }
-//                }
-//            }
-//            zeroingBuffersAndJsonParser();
-//
-//        }
-//    } else {
-//        commandBuffer[commandBufferIndex] = UART1_rxBuffer[0];
-//        commandBufferIndex++;
-//    }
-//
-//    HAL_UART_Receive_IT(&huart1, UART1_rxBuffer, 1);
-//}
-
 void zeroingBuffersAndJsonParser() {
     commandBufferIndex = 0;
     nestingLevel = 0;
-    for(int z = 0; z < COMMAND_BUFFER_LENGTH; z++)
+    for (int z = 0; z < COMMAND_BUFFER_LENGTH; z++)
         commandBuffer[z] = 0;
-    for(int z = 0; z < UART1_TX_BUFFER_LENGTH; z++)
+    for (int z = 0; z < UART1_TX_BUFFER_LENGTH; z++)
         UART1_txBuffer[z] = 0;
     jsmn_init(&p);
 }
 
+void zeroingUartTxBuffer() {
+    for (int z = 0; z < UART1_TX_BUFFER_LENGTH; z++)
+        UART1_txBuffer[z] = 0;
+}
+
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
+    // Check if UART1 trigger the Callback
+    if (huart->Instance == USART1) {
+        for (int k = 0; k < Size; k++) {
+            if (ReceiveBuffer[k] == '{') {
+                commandBuffer[commandBufferIndex] = ReceiveBuffer[k];
+                commandBufferIndex++;
+                nestingLevel++;
+            } else if (ReceiveBuffer[k] == '}') {
+                commandBuffer[commandBufferIndex] = ReceiveBuffer[k];
+                commandBufferIndex++;
+                nestingLevel--;
+            } else if (ReceiveBuffer[k] == '!') {
+                if (nestingLevel != 0) {
+                    zeroingBuffersAndJsonParser();
+//                    const char *error = "Invalid JSON command - wrong JSON nesting level";
+//                    HAL_UART_Transmit(&huart1, error, strlen(error), UART_TX_TIMEOUT_MS);
+                    speed = direction = 0;
+                    break;
+                } else {
+                    r = jsmn_parse(&p, commandBuffer, strlen(commandBuffer), t, sizeof(t) / sizeof(t[0]));
+                    if (r < 0) {
+//                    HAL_UART_Transmit(&huart1, "Failed to parse JSON\n", 22, UART_TX_TIMEOUT_MS);
+                    } else if (r < 1 || t[0].type != JSMN_OBJECT) {
+//                    HAL_UART_Transmit(&huart1, "Object expected\n", 17, UART_TX_TIMEOUT_MS);
+                    } else {
+                        for (i = 1; i < r; i++) {
+                            if (jsoneq((char *) commandBuffer, &t[i], "spd") == 0) {
+                                /* We may use strndup() to fetch string value */
+                                speed = strtol((char *) &commandBuffer + (t[i + 1].start), NULL, 10);
+                                if (speed > 0) {
+                                    motor_speed = speed;
+                                    drive_direction = 1;
+                                } else if (speed < 0) {
+                                    motor_speed = -speed;
+                                    drive_direction = -1;
+                                } else {
+                                    motor_speed = 0;
+                                    drive_direction = 0;
+                                }
+//                                sprintf((char *) &UART1_txBuffer, "Speed: %.*s, konw_spd: %d\n",
+//                                        t[i + 1].end - t[i + 1].start,
+//                                        commandBuffer + t[i + 1].start, speed);
+                                i++;
+//                            HAL_UART_Transmit(&huart1, UART1_txBuffer, strlen(UART1_txBuffer), UART_TX_TIMEOUT_MS);
+                            } else if (jsoneq(commandBuffer, &t[i], "dir") == 0) {
+                                direction = strtol((char *) &commandBuffer + (t[i + 1].start), NULL, 10);
+//                                sprintf((char *) &UART1_txBuffer, "Direction: %.*s, konw_dir: %d\n",
+//                                        t[i + 1].end - t[i + 1].start,
+//                                        commandBuffer + t[i + 1].start, direction);
+                                i++;
+//                            HAL_UART_Transmit(&huart1, UART1_txBuffer, strlen(UART1_txBuffer), UART_TX_TIMEOUT_MS);
+                            } else {
+//                                sprintf((char *) &UART1_txBuffer, "Unexpected key: %.*s\n", t[i].end - t[i].start,
+//                                        commandBuffer + t[i].start);
+//                            HAL_UART_Transmit(&huart1, UART1_txBuffer, strlen(UART1_txBuffer), UART_TX_TIMEOUT_MS);
+                            }
+                        }
+                    }
+                    zeroingBuffersAndJsonParser();
+                    break;
+                }
+            } else {
+                commandBuffer[commandBufferIndex] = ReceiveBuffer[k];
+                commandBufferIndex++;
+            }
+
+            //TODO: mozna zoptymalizowac i wywalic poza ifa
+            // Start to listening again - IMPORTANT!
+            HAL_UARTEx_ReceiveToIdle_DMA(&huart1, ReceiveBuffer, DMA_RECEIVE_LENGTH);
+            __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
+        }
+    } else {
+        HAL_UARTEx_ReceiveToIdle_DMA(&huart1, ReceiveBuffer, DMA_RECEIVE_LENGTH);
+        __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
+    }
+    ReceiveBuffer[0] = 0;
+}
+
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
+    if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1)  // if the interrupt source is channel1
+    {
+        if (Is_First_Captured == 0) // if the first value is not captured
+        {
+            IC_Val1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1); // read the first value
+            Is_First_Captured = 1;  // set the first captured as true
+            // Now change the polarity to falling edge
+            __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
+        } else if (Is_First_Captured == 1)   // if the first is already captured
+        {
+            IC_Val2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);  // read second value
+            __HAL_TIM_SET_COUNTER(htim, 0);  // reset the counter
+
+            if (IC_Val2 > IC_Val1) {
+                Difference = IC_Val2 - IC_Val1;
+            } else if (IC_Val1 > IC_Val2) {
+                Difference = (0xffff - IC_Val1) + IC_Val2;
+            }
+
+            Distance = Difference * .034 / 2;
+            Is_First_Captured = 0; // set it back to false
+
+            sprintf((char *) &UART1_txBuffer, "Odleglosc: %d\n", Distance);
+            HAL_UART_Transmit(&huart1, UART1_txBuffer, strlen(UART1_txBuffer), UART_TX_TIMEOUT_MS);
+            zeroingUartTxBuffer();
+
+            // set polarity to rising edge
+            __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
+            __HAL_TIM_DISABLE_IT(&htim1, TIM_IT_CC1);
+        }
+    }
+}
+
+void delay_us (uint16_t us)
+{
+    __HAL_TIM_SET_COUNTER(&htim4,0);  // set the counter value a 0
+    while (__HAL_TIM_GET_COUNTER(&htim4) < us);  // wait for the counter to reach the us input in the parameter
+}
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartBlink01 */
@@ -523,15 +741,13 @@ void zeroingBuffersAndJsonParser() {
 void StartBlink01(void *argument)
 {
   /* USER CODE BEGIN 5 */
-  /* Infinite loop */
-  for(;;)
-  {
-      HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-      osDelay(500);
-  }
+    /* Infinite loop */
+    for (;;) {
+        HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+        osDelay(500);
+    }
 
-  osThreadTerminate(NULL);
-
+    osThreadTerminate(NULL);
   /* USER CODE END 5 */
 }
 
@@ -545,15 +761,13 @@ void StartBlink01(void *argument)
 void StartBlink02(void *argument)
 {
   /* USER CODE BEGIN StartBlink02 */
-  /* Infinite loop */
-    for(;;)
-    {
+    /* Infinite loop */
+    for (;;) {
         HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
         osDelay(600);
     }
 
     osThreadTerminate(NULL);
-
   /* USER CODE END StartBlink02 */
 }
 
@@ -567,11 +781,29 @@ void StartBlink02(void *argument)
 void StartPwmTask(void *argument)
 {
   /* USER CODE BEGIN StartPwmTask */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
+    //TODO: dodac jeszcze pare pinow GPIO
+    /* Infinite loop */
+    for (;;) {
+        htim3.Instance->CCR1 = (direction / 2) + 75;  // duty cycle: 25 is 0.5ms ; 75 is 1.5 ms ; 125 is 2.5ms
+//        htim3.Instance->CCR2 = (speed/2) + 50; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
+        htim3.Instance->CCR2 = motor_speed; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
+        htim3.Instance->CCR3 = motor_speed; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
+        htim3.Instance->CCR4 = motor_speed; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
+        if (drive_direction == 0) {
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_RESET);
+        } else if (drive_direction == 1) {
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_RESET);
+        } else if (drive_direction == -1) {
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_SET);
+        }
+        osDelay(50);
+//        osThreadYield();
+    }
+
+    osThreadTerminate(NULL);
   /* USER CODE END StartPwmTask */
 }
 
@@ -585,11 +817,22 @@ void StartPwmTask(void *argument)
 void StartSensorTask(void *argument)
 {
   /* USER CODE BEGIN StartSensorTask */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
+    /* Infinite loop */
+    for (;;) {
+        HAL_UART_Transmit(&huart1, "Sprawdzam odleglosc...\n", 23, UART_TX_TIMEOUT_MS);
+        HAL_GPIO_WritePin(CZUJNIK_1_TRIG_GPIO_Port, CZUJNIK_1_TRIG_Pin, GPIO_PIN_SET);  // pull the TRIG pin HIGH
+        delay_us(11);  // wait for 10 us
+        HAL_GPIO_WritePin(CZUJNIK_1_TRIG_GPIO_Port, CZUJNIK_1_TRIG_Pin, GPIO_PIN_RESET);  // pull the TRIG pin low
+        __HAL_TIM_ENABLE_IT(&htim1, TIM_IT_CC1);
+//        __HAL_TIM_ENABLE_IT(&htim1, TIM_IT_CC2);
+//        __HAL_TIM_ENABLE_IT(&htim1, TIM_IT_CC3);
+//        __HAL_TIM_ENABLE_IT(&htim1, TIM_IT_CC4);
+
+        osDelay(200);
+//        osThreadYield();
+    }
+
+    osThreadTerminate(NULL);
   /* USER CODE END StartSensorTask */
 }
 
