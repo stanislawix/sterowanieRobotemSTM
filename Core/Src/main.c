@@ -39,15 +39,14 @@
 #define UART1_TX_BUFFER_LENGTH 60
 #define UART_TX_TIMEOUT_MS 100
 #define DMA_RECEIVE_LENGTH 30
-
+#define HCSR04_TIME_BETWEEN_NEXT_SENSOR_USAGE_MS 50
 
 /* USER CODE END PD */
-
 /* Private macro -------------------------------------------------------------*/
+
 /* USER CODE BEGIN PM */
 
 /* USER CODE END PM */
-
 /* Private variables ---------------------------------------------------------*/
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim3;
@@ -106,7 +105,10 @@ uint32_t IC_Val1 = 0;
 uint32_t IC_Val2 = 0;
 uint32_t Difference = 0;
 uint8_t Is_First_Captured = 0;  // is the first value captured ?
-uint8_t Distance = 0;
+uint8_t distance1 = 0;
+uint8_t distance2 = 0;
+uint8_t distance3 = 0;
+uint8_t distance4 = 0;
 
 /* USER CODE END PV */
 
@@ -178,14 +180,18 @@ int main(void)
   /* Initialize interrupts */
   MX_NVIC_Init();
   /* USER CODE BEGIN 2 */
-    HAL_TIM_Base_Start(&htim4); //start timera 4 do odmierzania mikrosekund dla obslugi czujnikow ultradzwiekowych HC-04
-    HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1); //start timera 3 do generowania PWM do sterowania silnikami i serwem robota
-    HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
-    HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
-    HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
-    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, ReceiveBuffer, DMA_RECEIVE_LENGTH);
-    __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
-
+  HAL_TIM_Base_Start(&htim3); //start timera 3 dla generowania PWM do sterowania silnikami i serwem //TODO: to dodane nie wiem czy potrzebne
+  HAL_TIM_Base_Start(&htim4); //start timera 4 do odmierzania mikrosekund dla obslugi czujnikow ultradzwiekowych HC-04
+  HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_1);
+  HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_2);
+  HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_3);
+  HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_4);
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1); //start timera 3 do generowania PWM do sterowania silnikami i serwem robota
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
+  HAL_UARTEx_ReceiveToIdle_DMA(&huart1, ReceiveBuffer, DMA_RECEIVE_LENGTH);
+  __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -691,16 +697,13 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
 }
 
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
-    if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1)  // if the interrupt source is channel1
-    {
-        if (Is_First_Captured == 0) // if the first value is not captured
-        {
+    if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1) { // if the interrupt source is channel1
+        if (Is_First_Captured == 0) { // if the first value is not captured
             IC_Val1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1); // read the first value
             Is_First_Captured = 1;  // set the first captured as true
             // Now change the polarity to falling edge
             __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
-        } else if (Is_First_Captured == 1)   // if the first is already captured
-        {
+        } else if (Is_First_Captured == 1) {  // if the first is already captured
             IC_Val2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);  // read second value
             __HAL_TIM_SET_COUNTER(htim, 0);  // reset the counter
 
@@ -710,10 +713,10 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
                 Difference = (0xffff - IC_Val1) + IC_Val2;
             }
 
-            Distance = Difference * .034 / 2;
+            distance1 = Difference * .034 / 2;
             Is_First_Captured = 0; // set it back to false
 
-            sprintf((char *) &UART1_txBuffer, "Odleglosc: %d\n", Distance);
+            sprintf((char *) &UART1_txBuffer, "Odleglosc1: %d\n", distance1);
             HAL_UART_Transmit(&huart1, UART1_txBuffer, strlen(UART1_txBuffer), UART_TX_TIMEOUT_MS);
             zeroingUartTxBuffer();
 
@@ -721,11 +724,91 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
             __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
             __HAL_TIM_DISABLE_IT(&htim1, TIM_IT_CC1);
         }
+    } else if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_2) { // if the interrupt source is channel2
+        if (Is_First_Captured == 0) { // if the first value is not captured
+            IC_Val1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2); // read the first value
+            Is_First_Captured = 1;  // set the first captured as true
+            // Now change the polarity to falling edge
+            __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_2, TIM_INPUTCHANNELPOLARITY_FALLING);
+        } else if (Is_First_Captured == 1) {  // if the first is already captured
+            IC_Val2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2);  // read second value
+            __HAL_TIM_SET_COUNTER(htim, 0);  // reset the counter
+
+            if (IC_Val2 > IC_Val1) {
+                Difference = IC_Val2 - IC_Val1;
+            } else if (IC_Val1 > IC_Val2) {
+                Difference = (0xffff - IC_Val1) + IC_Val2;
+            }
+
+            distance2 = Difference * .034 / 2;
+            Is_First_Captured = 0; // set it back to false
+
+            sprintf((char *) &UART1_txBuffer, "Odleglosc2: %d\n", distance2);
+            HAL_UART_Transmit(&huart1, UART1_txBuffer, strlen(UART1_txBuffer), UART_TX_TIMEOUT_MS);
+            zeroingUartTxBuffer();
+
+            // set polarity to rising edge
+            __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_2, TIM_INPUTCHANNELPOLARITY_RISING);
+            __HAL_TIM_DISABLE_IT(&htim1, TIM_IT_CC2);
+        }
+    } else if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_3) { // if the interrupt source is channel3
+        if (Is_First_Captured == 0) { // if the first value is not captured
+            IC_Val1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_3); // read the first value
+            Is_First_Captured = 1;  // set the first captured as true
+            // Now change the polarity to falling edge
+            __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_3, TIM_INPUTCHANNELPOLARITY_FALLING);
+        } else if (Is_First_Captured == 1) {  // if the first is already captured
+            IC_Val2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_3);  // read second value
+            __HAL_TIM_SET_COUNTER(htim, 0);  // reset the counter
+
+            if (IC_Val2 > IC_Val1) {
+                Difference = IC_Val2 - IC_Val1;
+            } else if (IC_Val1 > IC_Val2) {
+                Difference = (0xffff - IC_Val1) + IC_Val2;
+            }
+
+            distance3 = Difference * .034 / 2;
+            Is_First_Captured = 0; // set it back to false
+
+            sprintf((char *) &UART1_txBuffer, "Odleglosc3: %d\n", distance3);
+            HAL_UART_Transmit(&huart1, UART1_txBuffer, strlen(UART1_txBuffer), UART_TX_TIMEOUT_MS);
+            zeroingUartTxBuffer();
+
+            // set polarity to rising edge
+            __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_3, TIM_INPUTCHANNELPOLARITY_RISING);
+            __HAL_TIM_DISABLE_IT(&htim1, TIM_IT_CC3);
+        }
+    } else if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_4) { // if the interrupt source is channel4
+        if (Is_First_Captured == 0) { // if the first value is not captured
+            IC_Val1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_4); // read the first value
+            Is_First_Captured = 1;  // set the first captured as true
+            // Now change the polarity to falling edge
+            __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_4, TIM_INPUTCHANNELPOLARITY_FALLING);
+        } else if (Is_First_Captured == 1) {  // if the first is already captured
+            IC_Val2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_4);  // read second value
+            __HAL_TIM_SET_COUNTER(htim, 0);  // reset the counter
+
+            if (IC_Val2 > IC_Val1) {
+                Difference = IC_Val2 - IC_Val1;
+            } else if (IC_Val1 > IC_Val2) {
+                Difference = (0xffff - IC_Val1) + IC_Val2;
+            }
+
+            distance4 = Difference * .034 / 2;
+            Is_First_Captured = 0; // set it back to false
+
+            sprintf((char *) &UART1_txBuffer, "Odleglosc4: %d\n", distance4);
+            HAL_UART_Transmit(&huart1, UART1_txBuffer, strlen(UART1_txBuffer), UART_TX_TIMEOUT_MS);
+            zeroingUartTxBuffer();
+
+            // set polarity to rising edge
+            __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_4, TIM_INPUTCHANNELPOLARITY_RISING);
+            __HAL_TIM_DISABLE_IT(&htim1, TIM_IT_CC4);
+        }
     }
 }
 
-void delay_us (uint16_t us)
-{
+void delay_us (uint16_t us) {
     __HAL_TIM_SET_COUNTER(&htim4,0);  // set the counter value a 0
     while (__HAL_TIM_GET_COUNTER(&htim4) < us);  // wait for the counter to reach the us input in the parameter
 }
@@ -784,20 +867,49 @@ void StartPwmTask(void *argument)
     //TODO: dodac jeszcze pare pinow GPIO
     /* Infinite loop */
     for (;;) {
-        htim3.Instance->CCR1 = (direction / 2) + 75;  // duty cycle: 25 is 0.5ms ; 75 is 1.5 ms ; 125 is 2.5ms
-//        htim3.Instance->CCR2 = (speed/2) + 50; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
-        htim3.Instance->CCR2 = motor_speed; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
-        htim3.Instance->CCR3 = motor_speed; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
-        htim3.Instance->CCR4 = motor_speed; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
+        htim3.Instance->CCR1 = (direction / 4) + 75;  // duty cycle: 25 is 0.5ms ; 75 is 1.5 ms ; 125 is 2.5ms
         if (drive_direction == 0) {
-            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET);
-            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_RESET);
+            htim3.Instance->CCR2 = 0; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
+            htim3.Instance->CCR3 = 0; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
+            htim3.Instance->CCR4 = 0; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
+
+            HAL_GPIO_WritePin(REAR_PHASE_1_GPIO_Port, REAR_PHASE_1_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(REAR_PHASE_2_GPIO_Port, REAR_PHASE_2_Pin, GPIO_PIN_RESET);
+
+            HAL_GPIO_WritePin(FRONT_LEFT_PHASE_1_GPIO_Port, FRONT_LEFT_PHASE_1_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(FRONT_LEFT_PHASE_2_GPIO_Port, FRONT_LEFT_PHASE_2_Pin, GPIO_PIN_RESET);
+
+            HAL_GPIO_WritePin(FRONT_RIGHT_PHASE_1_GPIO_Port, FRONT_RIGHT_PHASE_1_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(FRONT_RIGHT_PHASE_2_GPIO_Port, FRONT_RIGHT_PHASE_2_Pin, GPIO_PIN_RESET);
         } else if (drive_direction == 1) {
-            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);
-            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_RESET);
+            // 9.5 -:- 20 ms
+            // 9.5ms = 9.5 * 50 = 475
+            // 20ms = 20 * 50 = 1000
+            htim3.Instance->CCR2 = (motor_speed * 525 / 100) + 475; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
+            htim3.Instance->CCR3 = (motor_speed * 525 / 100) + 475; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
+            htim3.Instance->CCR4 = (motor_speed * 525 / 100) + 475; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
+
+            HAL_GPIO_WritePin(REAR_PHASE_1_GPIO_Port, REAR_PHASE_1_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(REAR_PHASE_2_GPIO_Port, REAR_PHASE_2_Pin, GPIO_PIN_SET);
+
+            HAL_GPIO_WritePin(FRONT_LEFT_PHASE_1_GPIO_Port, FRONT_LEFT_PHASE_1_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(FRONT_LEFT_PHASE_2_GPIO_Port, FRONT_LEFT_PHASE_2_Pin, GPIO_PIN_SET);
+
+            HAL_GPIO_WritePin(FRONT_RIGHT_PHASE_1_GPIO_Port, FRONT_RIGHT_PHASE_1_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(FRONT_RIGHT_PHASE_2_GPIO_Port, FRONT_RIGHT_PHASE_2_Pin, GPIO_PIN_RESET);
         } else if (drive_direction == -1) {
-            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET);
-            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_SET);
+            htim3.Instance->CCR2 = (motor_speed * 525 / 100) + 475; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
+            htim3.Instance->CCR3 = (motor_speed * 525 / 100) + 475; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
+            htim3.Instance->CCR4 = (motor_speed * 525 / 100) + 475; //inaczej to, chyba innym pinem zmienia sie kierunek jazdy
+
+            HAL_GPIO_WritePin(REAR_PHASE_1_GPIO_Port, REAR_PHASE_1_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(REAR_PHASE_2_GPIO_Port, REAR_PHASE_2_Pin, GPIO_PIN_RESET);
+
+            HAL_GPIO_WritePin(FRONT_LEFT_PHASE_1_GPIO_Port, FRONT_LEFT_PHASE_1_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(FRONT_LEFT_PHASE_2_GPIO_Port, FRONT_LEFT_PHASE_2_Pin, GPIO_PIN_RESET);
+
+            HAL_GPIO_WritePin(FRONT_RIGHT_PHASE_1_GPIO_Port, FRONT_RIGHT_PHASE_1_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(FRONT_RIGHT_PHASE_2_GPIO_Port, FRONT_RIGHT_PHASE_2_Pin, GPIO_PIN_SET);
         }
         osDelay(50);
 //        osThreadYield();
@@ -820,13 +932,34 @@ void StartSensorTask(void *argument)
     /* Infinite loop */
     for (;;) {
         HAL_UART_Transmit(&huart1, "Sprawdzam odleglosc...\n", 23, UART_TX_TIMEOUT_MS);
+
         HAL_GPIO_WritePin(CZUJNIK_1_TRIG_GPIO_Port, CZUJNIK_1_TRIG_Pin, GPIO_PIN_SET);  // pull the TRIG pin HIGH
         delay_us(11);  // wait for 10 us
         HAL_GPIO_WritePin(CZUJNIK_1_TRIG_GPIO_Port, CZUJNIK_1_TRIG_Pin, GPIO_PIN_RESET);  // pull the TRIG pin low
         __HAL_TIM_ENABLE_IT(&htim1, TIM_IT_CC1);
-//        __HAL_TIM_ENABLE_IT(&htim1, TIM_IT_CC2);
-//        __HAL_TIM_ENABLE_IT(&htim1, TIM_IT_CC3);
-//        __HAL_TIM_ENABLE_IT(&htim1, TIM_IT_CC4);
+        osDelay(HCSR04_TIME_BETWEEN_NEXT_SENSOR_USAGE_MS);
+        
+        HAL_GPIO_WritePin(CZUJNIK_2_TRIG_GPIO_Port, CZUJNIK_2_TRIG_Pin, GPIO_PIN_SET);  // pull the TRIG pin HIGH
+        delay_us(11);  // wait for 10 us
+        HAL_GPIO_WritePin(CZUJNIK_2_TRIG_GPIO_Port, CZUJNIK_2_TRIG_Pin, GPIO_PIN_RESET);  // pull the TRIG pin low
+        __HAL_TIM_ENABLE_IT(&htim1, TIM_IT_CC2);
+        osDelay(HCSR04_TIME_BETWEEN_NEXT_SENSOR_USAGE_MS);
+
+        HAL_GPIO_WritePin(CZUJNIK_3_TRIG_GPIO_Port, CZUJNIK_3_TRIG_Pin, GPIO_PIN_SET);  // pull the TRIG pin HIGH
+        delay_us(11);  // wait for 10 us
+        HAL_GPIO_WritePin(CZUJNIK_3_TRIG_GPIO_Port, CZUJNIK_3_TRIG_Pin, GPIO_PIN_RESET);  // pull the TRIG pin low
+        __HAL_TIM_ENABLE_IT(&htim1, TIM_IT_CC3);
+        osDelay(HCSR04_TIME_BETWEEN_NEXT_SENSOR_USAGE_MS);
+
+        HAL_GPIO_WritePin(CZUJNIK_4_TRIG_GPIO_Port, CZUJNIK_4_TRIG_Pin, GPIO_PIN_SET);  // pull the TRIG pin HIGH
+        delay_us(11);  // wait for 10 us
+        HAL_GPIO_WritePin(CZUJNIK_4_TRIG_GPIO_Port, CZUJNIK_4_TRIG_Pin, GPIO_PIN_RESET);  // pull the TRIG pin low
+        __HAL_TIM_ENABLE_IT(&htim1, TIM_IT_CC4);
+
+        sprintf(UART1_txBuffer, "%d;%d;%d;%d;\n", distance1, distance2, distance3, distance4);
+        HAL_UART_Transmit(&huart1, UART1_txBuffer, strlen(UART1_txBuffer), UART_TX_TIMEOUT_MS);
+//        osDelay(HCSR04_TIME_BETWEEN_NEXT_SENSOR_USAGE_MS);
+
 
         osDelay(200);
 //        osThreadYield();
